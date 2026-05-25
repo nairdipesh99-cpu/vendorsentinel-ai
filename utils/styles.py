@@ -12,7 +12,7 @@ html, body, [class*="css"] {
     background: #0D1B2A !important;
 }
 .block-container {
-    padding: 1.5rem 2rem 2rem 2rem !important;
+    padding: 2.5rem 2rem 2rem 2rem !important;
     max-width: 100% !important;
 }
 section[data-testid="stSidebar"] {
