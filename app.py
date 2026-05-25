@@ -1,5 +1,9 @@
 import streamlit as st
-from pages import dashboard, vendor_detail, add_vendor, threat_intel, reports
+from pages import _dashboard as dashboard
+from pages import _vendor_detail as vendor_detail
+from pages import _add_vendor as add_vendor
+from pages import _threat_intel as threat_intel
+from pages import _reports as reports
 from utils.storage import init_storage
 from utils.styles import load_css
 
