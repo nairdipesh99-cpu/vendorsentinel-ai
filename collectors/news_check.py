@@ -123,7 +123,7 @@ else:
             })
 
     result["score_contribution"] = sum(
-        {"Critical": 25, "High": 15, "Medium": 8, "Low": 3, "Info": 0}.get(f["severity"], 0)
+        {"Critical": 15, "High": 10, "Medium": 5, "Low": 2, "Info": 0}.get(f["severity"], 0)
         for f in result["findings"]
     )
     return result
