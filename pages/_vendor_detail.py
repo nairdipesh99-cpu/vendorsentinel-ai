@@ -241,6 +241,28 @@ def render(domain):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+
+    # Delete vendor
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_del, col_confirm = st.columns([1, 3])
+    with col_del:
+        delete_clicked = st.button(f"🗑️ Delete {name}", use_container_width=True)
+    with col_confirm:
+        if delete_clicked:
+            confirm = st.checkbox("Tick to confirm deletion")
+            if confirm:
+                from utils.storage import load_vendors, save_vendors, load_evidence, EVIDENCE_FILE
+                import json
+                vendors = load_vendors()
+                vendors = [v for v in vendors if v["domain"] != domain]
+                save_vendors(vendors)
+                evidence = json.loads(EVIDENCE_FILE.read_text())
+                evidence = [e for e in evidence if e.get("domain") != domain]
+                EVIDENCE_FILE.write_text(json.dumps(evidence, indent=2))
+                st.success(f"{name} deleted successfully.")
+                st.session_state.selected_vendor = None
+                st.session_state.page = "dashboard"
+                st.rerun()
     # Rescan button
     if st.button(f"🔄 Rescan {name}", use_container_width=False):
         try:
