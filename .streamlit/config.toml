@@ -1,8 +1,12 @@
+[theme]
+primaryColor = "#1A56DB"
+backgroundColor = "#0D1B2A"
+secondaryBackgroundColor = "#1E293B"
+textColor = "#F1F5F9"
+font = "sans serif"
 
-ANTHROPIC_API_KEY = "sk-ant-..."
-SHODAN_API_KEY = "your-key-here"
-HIBP_API_KEY = "your-key-here"
-NEWS_API_KEY = "your-key-here"
+[server]
+maxUploadSize = 10
 
-[database]
-url = "postgresql://user:password@localhost/vendorsentinel"
+[browser]
+gatherUsageStats = false
