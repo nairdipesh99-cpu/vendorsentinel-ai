@@ -18,7 +18,8 @@ html, body, [class*="css"] {
 section[data-testid="stSidebar"] {
     background: #0A1628 !important;
     border-right: 1px solid #1E293B !important;
-    width: 240px !important;
+    width: 260px !important;
+    min-width: 260px !important;
 }
 section[data-testid="stSidebar"] > div {
     padding: 0 !important;
