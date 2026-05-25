@@ -99,13 +99,20 @@ def check_news(domain, company_name=None, api_key=None):
             published = a.get("publishedAt", "")[:10] if a.get("publishedAt") else "Unknown date"
             source_name = a.get("source", {}).get("name", "Unknown source")
 
-            title_lower = title.lower()
-            if any(kw in title_lower for kw in ["ransomware", "breach", "hack", "cyberattack", "leak"]):
-                severity = "Critical"
-            elif any(kw in title_lower for kw in ["fine", "penalty", "regulatory", "lawsuit", "fraud"]):
-                severity = "High"
-            else:
-                severity = "Medium"
+           title_lower = title.lower()
+# Check if vendor is the victim or just mentioned as observer
+observer_words = ["warns", "warning", "advises", "reports on", "discovers",
+                  "finds", "reveals", "uncovers", "alerts", "detects"]
+is_observer = any(w in title_lower for w in observer_words)
+
+if is_observer:
+    severity = "Low"
+elif any(kw in title_lower for kw in ["ransomware", "breach", "hack", "cyberattack", "leak"]):
+    severity = "High"
+elif any(kw in title_lower for kw in ["fine", "penalty", "regulatory", "lawsuit", "fraud"]):
+    severity = "High"
+else:
+    severity = "Medium"
 
             result["findings"].append({
                 "title":    f"Adverse media: {title[:80]}{'...' if len(title) > 80 else ''}",
