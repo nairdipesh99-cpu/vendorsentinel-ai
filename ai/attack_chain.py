@@ -65,7 +65,10 @@ def build_signals_summary(collector_results):
             sev = f.get("severity", "Info")
             if sev == "Info":
                 continue
-            lines.append(f"[{sev.upper()}] {source}: {f.get('title', '')} — {f.get('detail', '')[:150]}")
+            lines.append(
+                f"[{sev.upper()}] {source}: {f.get('title', '')} "
+                f"— {f.get('detail', '')[:150]}"
+            )
     return "\n".join(lines) if lines else "No significant findings."
 
 
@@ -79,8 +82,8 @@ def build_threat_context(kev_entries, nvd_entries):
     for e in (nvd_entries or [])[:5]:
         if e.get("severity") in ("Critical", "High"):
             lines.append(
-                f"NVD CVE: {e.get('cve_id', '')} CVSS {e.get('cvss_score', '')} — "
-                f"{e.get('title', '')[:100]}"
+                f"NVD CVE: {e.get('cve_id', '')} CVSS {e.get('cvss_score', '')} "
+                f"— {e.get('title', '')[:100]}"
             )
     return "\n".join(lines) if lines else "No specific threat intelligence matches."
 
@@ -100,10 +103,10 @@ def run_attack_chain_analysis(
     threat_context  = build_threat_context(kev_entries or [], nvd_entries or [])
 
     prompt = ATTACK_CHAIN_PROMPT.format(
-        domain         = domain,
-        data_access    = data_access or "General business data",
-        signals_summary= signals_summary,
-        threat_context = threat_context,
+        domain          = domain,
+        data_access     = data_access or "General business data",
+        signals_summary = signals_summary,
+        threat_context  = threat_context,
     )
 
     try:
@@ -116,7 +119,6 @@ def run_attack_chain_analysis(
         )
         raw = message.content[0].text.strip()
 
-        # Strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -134,18 +136,237 @@ def run_attack_chain_analysis(
         return _fallback_analysis(domain, collector_results, error=str(e))
 
 
-def _fallback_analysis(domain, collector_results, error=None):
-    """Rule-based fallback when Claude API is not available."""
-    total_score = 0
-    all_controls = []
+# ── RECOMMENDATION ENGINE ──────────────────────────────────────────────────────
 
-    severity_weights = {"Critical": 25, "High": 15, "Medium": 8, "Low": 3, "Info": 0}
+def _build_recommendations(critical_findings, high_findings):
+    """
+    Build proper actionable recommendations based on what was actually found.
+    Never returns article titles — always returns real remediation actions.
+    """
+    recs = []
+    all_findings = critical_findings + high_findings
+    sources = set(f.get("source", "") for f in all_findings)
+    titles  = " ".join(f.get("title", "").lower() for f in all_findings)
+
+    if "SSL/TLS" in sources or "ssl" in titles:
+        if "expir" in titles:
+            recs.append(
+                "Renew the SSL/TLS certificate immediately and implement automated "
+                "renewal to prevent future expiry and service disruption"
+            )
+        else:
+            recs.append(
+                "Review SSL/TLS configuration — ensure certificates use trusted CAs, "
+                "strong cipher suites, and TLS 1.2 or higher only"
+            )
+
+    if "DNS & Email Security" in sources or "dmarc" in titles or "spf" in titles:
+        recs.append(
+            "Implement DMARC policy set to p=reject and configure SPF with -all "
+            "to prevent domain spoofing and phishing attacks using this vendor's domain"
+        )
+
+    if "Shodan (Attack Surface)" in sources or "rdp" in titles or "port" in titles:
+        recs.append(
+            "Remove all publicly exposed management ports — especially RDP (3389), "
+            "Telnet (23), and database ports — restrict access behind a VPN or firewall"
+        )
+
+    if "HIBP (Breach Database)" in sources or "breach" in titles or "credential" in titles:
+        recs.append(
+            "Request written confirmation of credential rotation and MFA enforcement "
+            "following identified historical breach — obtain their formal incident report"
+        )
+
+    if "Adverse Media" in sources:
+        recs.append(
+            "Request vendor's most recent third-party penetration test report (within 12 months) "
+            "and their formal written response to any regulatory or media incidents"
+        )
+
+    if "cve" in titles or "vulnerabilit" in titles:
+        recs.append(
+            "Request evidence of patch management process and confirm all critical "
+            "CVEs identified in this assessment have been remediated with timelines"
+        )
+
+    if not recs:
+        recs = [
+            "Request vendor's latest ISO 27001 certificate or SOC 2 Type II report "
+            "as evidence of their security programme maturity",
+            "Review data processing agreement and ensure breach notification obligations "
+            "are contractually defined with a maximum 72-hour notification window",
+            "Schedule a formal vendor security review within 30 days and add this "
+            "vendor to your continuous monitoring programme",
+        ]
+
+    return recs[:3]
+
+
+# ── SCORE ENGINE ───────────────────────────────────────────────────────────────
+
+def _calculate_score(collector_results):
+    """
+    Context-aware scoring — news findings weighted lower than
+    technical findings because they are indirect unverified evidence.
+    """
+    source_weights = {
+        "SSL/TLS":                  {"Critical": 25, "High": 15, "Medium": 8,  "Low": 3,  "Info": 0},
+        "DNS & Email Security":     {"Critical": 20, "High": 12, "Medium": 6,  "Low": 2,  "Info": 0},
+        "Shodan (Attack Surface)":  {"Critical": 25, "High": 15, "Medium": 8,  "Low": 3,  "Info": 0},
+        "HIBP (Breach Database)":   {"Critical": 20, "High": 12, "Medium": 6,  "Low": 2,  "Info": 0},
+        "Adverse Media":            {"Critical": 10, "High": 6,  "Medium": 3,  "Low": 1,  "Info": 0},
+    }
+    default_weights = {"Critical": 20, "High": 12, "Medium": 6, "Low": 2, "Info": 0}
+
+    total = 0
     for r in collector_results:
+        source  = r.get("source", "")
+        weights = source_weights.get(source, default_weights)
         for f in r.get("findings", []):
-            total_score += severity_weights.get(f.get("severity", "Info"), 0)
-            all_controls.extend(f.get("controls", []))
+            sev    = f.get("severity", "Info")
+            total += weights.get(sev, 0)
 
-    risk_score = min(total_score, 100)
+    return min(total, 100)
+
+
+# ── NARRATIVE ENGINE ───────────────────────────────────────────────────────────
+
+def _build_narrative(domain, risk_tier, critical_findings, high_findings, all_results):
+    """
+    Contextual narrative based on actual technical findings only.
+    Never mentions news article titles.
+    """
+    technical_issues = []
+    for r in all_results:
+        source = r.get("source", "")
+        if source == "Adverse Media":
+            continue
+        for f in r.get("findings", []):
+            if f.get("severity") in ("Critical", "High"):
+                technical_issues.append((source, f.get("title", ""), f.get("severity")))
+
+    if not technical_issues and not critical_findings and not high_findings:
+        return (
+            f"{domain} presents a {risk_tier.lower()} risk profile based on passive analysis. "
+            "No significant technical vulnerabilities were detected across SSL certificate health, "
+            "DNS email security, attack surface analysis, or breach databases. "
+            "Continue monitoring for changes in this vendor's security posture. "
+            "Consider requesting their latest security assessment for a complete picture."
+        )
+
+    if technical_issues:
+        issue_descriptions = [
+            f"{title.lower()} via {source}"
+            for source, title, sev in technical_issues[:2]
+        ]
+        issues_str = "; ".join(issue_descriptions)
+        return (
+            f"{domain} presents a {risk_tier.lower()} risk profile based on technical signals. "
+            f"Key findings include: {issues_str}. "
+            "An attacker could chain these signals to reach data shared by your organisation "
+            "with this vendor, reducing the effort and time required for a successful breach. "
+            "Prioritise the remediation actions below before extending this vendor relationship."
+        )
+
+    return (
+        f"{domain} presents a {risk_tier.lower()} risk profile. "
+        "Technical infrastructure checks did not identify direct exploitable vulnerabilities. "
+        "However, adverse media signals indicate reputational and governance risks "
+        "that warrant further investigation before renewing or extending this vendor relationship. "
+        "Request the vendor's latest penetration test report and formal security certifications."
+    )
+
+
+# ── COMPLIANCE ENGINE ──────────────────────────────────────────────────────────
+
+def _build_compliance(collector_results, risk_score):
+    """
+    Framework-specific compliance assessment based on actual findings.
+    Not just pass/fail based on score — maps to specific signals.
+    """
+    has_ssl_issue    = False
+    has_email_issue  = False
+    has_exposure     = False
+    has_breach       = False
+    has_media        = False
+
+    for r in collector_results:
+        source = r.get("source", "")
+        has_critical_or_high = any(
+            f.get("severity") in ("Critical", "High")
+            for f in r.get("findings", [])
+        )
+        if source == "SSL/TLS" and has_critical_or_high:
+            has_ssl_issue = True
+        if source == "DNS & Email Security" and has_critical_or_high:
+            has_email_issue = True
+        if source == "Shodan (Attack Surface)" and has_critical_or_high:
+            has_exposure = True
+        if source == "HIBP (Breach Database)" and has_critical_or_high:
+            has_breach = True
+        if source == "Adverse Media" and has_critical_or_high:
+            has_media = True
+
+    frameworks = {
+        "ISO 27001": {
+            "fail": has_ssl_issue or has_email_issue or has_exposure or has_breach,
+            "controls": ["A.8.20", "A.8.23", "A.8.24", "A.5.7"],
+            "pass_detail": "No critical technical findings — manual assessment recommended to confirm",
+            "fail_detail": "SSL, DNS, or breach findings indicate control gaps in Annex A supplier security",
+        },
+        "SOC 2": {
+            "fail": has_exposure or has_breach or has_ssl_issue,
+            "controls": ["CC6.1", "CC6.6", "CC7.2", "CC9.2"],
+            "pass_detail": "No findings mapping to Trust Service Criteria failures",
+            "fail_detail": "Exposed services or breach history indicate CC6/CC7 control failures",
+        },
+        "DORA": {
+            "fail": has_exposure or has_breach,
+            "controls": ["Art.28", "Art.30", "Art.9"],
+            "pass_detail": "No DORA ICT third-party risk signals detected",
+            "fail_detail": "Exposed infrastructure or breach history triggers DORA Art.28 ICT risk obligations",
+        },
+        "NIS2": {
+            "fail": has_exposure or has_email_issue,
+            "controls": ["Art.21", "Art.23"],
+            "pass_detail": "No NIS2 supply chain security risk signals detected",
+            "fail_detail": "Supply chain security obligations under NIS2 Art.21 may not be satisfied",
+        },
+        "NIST CSF": {
+            "fail": has_email_issue or has_exposure or has_breach,
+            "controls": ["GV.SC-06", "PR.AC-05", "DE.CM-01"],
+            "pass_detail": "No NIST CSF supply chain subcategory failures detected",
+            "fail_detail": "GV.SC supply chain risk management subcategories not fully addressed",
+        },
+        "PCI DSS": {
+            "fail": has_exposure or has_breach,
+            "controls": ["Req 12.8", "Req 6.3"],
+            "pass_detail": "No PCI DSS third-party service provider risk signals detected",
+            "fail_detail": "Req 12.8 third-party security programme requirements may not be met",
+        },
+    }
+
+    result = {}
+    for fw, config in frameworks.items():
+        status = "Fail" if config["fail"] else "Pass"
+        detail = config["fail_detail"] if config["fail"] else config["pass_detail"]
+        result[fw] = {
+            "status":   status,
+            "controls": config["controls"] if config["fail"] else [],
+            "detail":   detail,
+        }
+    return result
+
+
+# ── FALLBACK ANALYSIS ──────────────────────────────────────────────────────────
+
+def _fallback_analysis(domain, collector_results, error=None):
+    """
+    Rule-based fallback when Claude API is not available.
+    Produces accurate context-aware scoring and proper recommendations.
+    """
+    risk_score = _calculate_score(collector_results)
     risk_tier  = score_to_tier(risk_score)
 
     critical_findings = [
@@ -159,47 +380,38 @@ def _fallback_analysis(domain, collector_results, error=None):
         if f.get("severity") == "High"
     ]
 
-    if critical_findings:
-        narrative = (
-            f"{domain} presents a {risk_tier.lower()} risk profile. "
-            f"Critical findings include: {'; '.join(f['title'] for f in critical_findings[:2])}. "
-            "These represent direct attack vectors that could be exploited to access data "
-            "shared by your organisation with this vendor. "
-            "Immediate remediation is required to prevent potential data exposure."
-        )
-    elif high_findings:
-        narrative = (
-            f"{domain} presents a {risk_tier.lower()} risk profile. "
-            f"High severity findings: {'; '.join(f['title'] for f in high_findings[:2])}. "
-            "These findings, combined, create exploitable paths through the vendor's infrastructure. "
-            "Remediation should be prioritised within 30 days."
-        )
-    else:
-        narrative = (
-            f"{domain} presents a {risk_tier.lower()} risk profile based on passive analysis. "
-            "No critical or high severity findings were detected. "
-            "Continue monitoring for changes in the vendor's security posture."
-        )
+    narrative       = _build_narrative(domain, risk_tier, critical_findings, high_findings, collector_results)
+    compliance_gaps = _build_compliance(collector_results, risk_score)
+    recommendations = _build_recommendations(critical_findings, high_findings)
 
-    fw_status = "Fail" if risk_score >= 55 else "Pass"
-    note = f"Risk score {risk_score}/100 — review findings for details."
+    # Attack steps — technical only, never article titles
+    technical_steps = [
+        f["title"]
+        for r in collector_results
+        for f in r.get("findings", [])
+        if f.get("severity") in ("Critical", "High")
+        and r.get("source") != "Adverse Media"
+    ][:3]
+
+    if not technical_steps:
+        technical_steps = [
+            "No direct technical attack vectors identified in passive analysis",
+            "Monitor vendor infrastructure continuously for new exposures",
+            "Request vendor security documentation to complete the assessment",
+        ]
+
+    effort = "Low" if risk_score >= 75 else "Medium" if risk_score >= 40 else "High"
 
     return {
         "risk_score":            risk_score,
         "risk_tier":             risk_tier,
         "attack_path_narrative": narrative,
-        "key_attack_steps":      [f["title"] for f in (critical_findings + high_findings)[:3]],
-        "compliance_gaps": {
-            fw: {"status": fw_status, "controls": [], "detail": note}
-            for fw in ["ISO 27001", "SOC 2", "DORA", "NIS2", "NIST CSF", "PCI DSS"]
-        },
-        "top_recommendations": [
-            f["title"] for f in (critical_findings + high_findings)[:3]
-        ] or ["No critical actions required at this time."],
-        "confidence":           "Medium",
-        "threat_actor_effort":  "Low" if risk_score >= 75 else "Medium",
-        "ai_powered":           False,
-        "domain":               domain,
-        "error":                error,
+        "key_attack_steps":      technical_steps,
+        "compliance_gaps":       compliance_gaps,
+        "top_recommendations":   recommendations,
+        "confidence":            "Medium",
+        "threat_actor_effort":   effort,
+        "ai_powered":            False,
+        "domain":                domain,
+        "error":                 error,
     }
-
