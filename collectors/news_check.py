@@ -9,6 +9,14 @@ RISK_KEYWORDS = [
     "malware", "investigation", "sanction", "shutdown",
 ]
 
+# Words that indicate the company is reporting on others, not being breached
+OBSERVER_WORDS = [
+    "warns", "warning", "advises", "reports on", "discovers",
+    "finds", "reveals", "uncovers", "alerts", "detects", "announces",
+    "launches", "releases", "introduces", "updates", "improves",
+]
+
+
 def check_news(domain, company_name=None, api_key=None):
     result = {
         "source":   "Adverse Media",
@@ -18,7 +26,6 @@ def check_news(domain, company_name=None, api_key=None):
         "status":   "ok",
     }
 
-    # Extract company name from domain if not provided
     if not company_name:
         company_name = domain.split(".")[0].title()
 
@@ -27,7 +34,6 @@ def check_news(domain, company_name=None, api_key=None):
 
     articles = []
 
-    # Try NewsAPI if key available
     if api_key:
         try:
             resp = requests.get(
@@ -49,18 +55,21 @@ def check_news(domain, company_name=None, api_key=None):
         except Exception as e:
             result["raw"]["news_error"] = str(e)
 
-    # Fallback: Google News RSS (no key needed)
     if not articles:
         try:
             query = urllib.parse.quote(f"{company_name} cybersecurity breach")
             rss_url = f"https://news.google.com/rss/search?q={query}&hl=en-GB&gl=GB&ceid=GB:en"
-            resp = requests.get(rss_url, timeout=10, headers={"User-Agent": "VendorSentinel/1.0"})
+            resp = requests.get(
+                rss_url,
+                timeout=10,
+                headers={"User-Agent": "VendorSentinel/1.0"},
+            )
             if resp.status_code == 200:
                 import re
                 items = re.findall(r"<item>(.*?)</item>", resp.text, re.DOTALL)
                 for item in items[:5]:
                     title_m = re.search(r"<title>(.*?)</title>", item)
-                    link_m  = re.search(r"<link>(.*?)</link>",  item)
+                    link_m  = re.search(r"<link>(.*?)</link>",   item)
                     date_m  = re.search(r"<pubDate>(.*?)</pubDate>", item)
                     if title_m:
                         articles.append({
@@ -73,6 +82,7 @@ def check_news(domain, company_name=None, api_key=None):
             pass
 
     result["raw"]["articles"] = articles
+
     risk_articles = []
     for a in articles:
         title = a.get("title", "").lower()
@@ -95,24 +105,22 @@ def check_news(domain, company_name=None, api_key=None):
         })
     else:
         for a in risk_articles[:3]:
-            title = a.get("title", "Unknown")
-            published = a.get("publishedAt", "")[:10] if a.get("publishedAt") else "Unknown date"
+            title       = a.get("title", "Unknown")
+            published   = a.get("publishedAt", "")[:10] if a.get("publishedAt") else "Unknown date"
             source_name = a.get("source", {}).get("name", "Unknown source")
+            title_lower = title.lower()
 
-           title_lower = title.lower()
-# Check if vendor is the victim or just mentioned as observer
-observer_words = ["warns", "warning", "advises", "reports on", "discovers",
-                  "finds", "reveals", "uncovers", "alerts", "detects"]
-is_observer = any(w in title_lower for w in observer_words)
+            # Check if vendor is observer (reporting on others) not the victim
+            is_observer = any(w in title_lower for w in OBSERVER_WORDS)
 
-if is_observer:
-    severity = "Low"
-elif any(kw in title_lower for kw in ["ransomware", "breach", "hack", "cyberattack", "leak"]):
-    severity = "High"
-elif any(kw in title_lower for kw in ["fine", "penalty", "regulatory", "lawsuit", "fraud"]):
-    severity = "High"
-else:
-    severity = "Medium"
+            if is_observer:
+                severity = "Low"
+            elif any(kw in title_lower for kw in ["ransomware", "breach", "hack", "cyberattack", "leak"]):
+                severity = "High"
+            elif any(kw in title_lower for kw in ["fine", "penalty", "regulatory", "lawsuit", "fraud"]):
+                severity = "High"
+            else:
+                severity = "Medium"
 
             result["findings"].append({
                 "title":    f"Adverse media: {title[:80]}{'...' if len(title) > 80 else ''}",
@@ -122,9 +130,11 @@ else:
                 "url":      a.get("url", ""),
             })
 
+    # News findings use lower weights — indirect unverified evidence
     result["score_contribution"] = sum(
-        {"Critical": 15, "High": 10, "Medium": 5, "Low": 2, "Info": 0}.get(f["severity"], 0)
+        {"Critical": 10, "High": 6, "Medium": 3, "Low": 1, "Info": 0}.get(
+            f["severity"], 0
+        )
         for f in result["findings"]
     )
     return result
-
