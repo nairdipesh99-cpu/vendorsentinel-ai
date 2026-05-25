@@ -244,25 +244,41 @@ def render(domain):
 
     # Delete vendor
     st.markdown("<br>", unsafe_allow_html=True)
-    col_del, col_confirm = st.columns([1, 3])
-    with col_del:
-        delete_clicked = st.button(f"🗑️ Delete {name}", use_container_width=True)
-    with col_confirm:
-        if delete_clicked:
-            confirm = st.checkbox("Tick to confirm deletion")
-            if confirm:
-                from utils.storage import load_vendors, save_vendors, load_evidence, EVIDENCE_FILE
+    st.markdown('<div class="section-card"><div class="section-card-title">Danger Zone</div>', unsafe_allow_html=True)
+
+    if f"confirm_delete_{domain}" not in st.session_state:
+        st.session_state[f"confirm_delete_{domain}"] = False
+
+    if not st.session_state[f"confirm_delete_{domain}"]:
+        if st.button(f"🗑️ Delete {name}", use_container_width=False):
+            st.session_state[f"confirm_delete_{domain}"] = True
+            st.rerun()
+    else:
+        st.warning(f"Are you sure you want to delete **{name}**? This cannot be undone.")
+        col_yes, col_no = st.columns([1, 1])
+        with col_yes:
+            if st.button("✓ Yes, delete permanently", use_container_width=True):
+                from utils.storage import load_vendors, save_vendors, EVIDENCE_FILE
                 import json
                 vendors = load_vendors()
                 vendors = [v for v in vendors if v["domain"] != domain]
                 save_vendors(vendors)
-                evidence = json.loads(EVIDENCE_FILE.read_text())
-                evidence = [e for e in evidence if e.get("domain") != domain]
-                EVIDENCE_FILE.write_text(json.dumps(evidence, indent=2))
-                st.success(f"{name} deleted successfully.")
+                try:
+                    evidence = json.loads(EVIDENCE_FILE.read_text())
+                    evidence = [e for e in evidence if e.get("domain") != domain]
+                    EVIDENCE_FILE.write_text(json.dumps(evidence, indent=2))
+                except Exception:
+                    pass
+                st.session_state[f"confirm_delete_{domain}"] = False
                 st.session_state.selected_vendor = None
                 st.session_state.page = "dashboard"
                 st.rerun()
+        with col_no:
+            if st.button("✗ Cancel", use_container_width=True):
+                st.session_state[f"confirm_delete_{domain}"] = False
+                st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
     # Rescan button
     if st.button(f"🔄 Rescan {name}", use_container_width=False):
         try:
